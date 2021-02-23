@@ -13,7 +13,7 @@ for NUM_MATCHING in 3 4 5 6 7
 do
     for PROX in 1 4
     do
-        python3 patching_algorithm.py mouse rat $s1_filename $s2_filename $NUM_MATCHING $PROX $PROX False
+        python3 patching_algorithm.py $species1 $species2 $s1_filename $s2_filename $NUM_MATCHING $PROX $PROX False
     done
 done
 
