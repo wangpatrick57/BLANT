@@ -32,6 +32,11 @@ class Index:
         splitted_str = index_str.split(' ')
         self._graphlet_id = int(splitted_str[0])
         self._node_arr = splitted_str[1:]
+        self._index_of = dict()
+
+        for i, node in enumerate(self._node_arr):
+            self._index_of[node] = i
+
         self._node_set = set(splitted_str[1:])
 
     def get_graphlet_id(self):
@@ -42,6 +47,12 @@ class Index:
 
     def node_in(self, node):
         return node in self._node_set
+
+    def index_of(self, node):
+        if node in self._index_of:
+            return self._index_of[node]
+        else:
+            return -1
 
     def get_num_matching(self, other_index):
         num_matching = 0
@@ -82,9 +93,11 @@ class PatchedIndex:
         self._right_connectors = right_index.get_matching_list(left_index) # returns matching nodes in right's array poses
         self._num_matching = len(self._left_connectors)
 
-        # node order is [eight nodes of left_index in order] + [nodes of right_index not in left_index, in order]
+        # node order is [nonmatching nodes of left_index in order] + [matching nodes in left_index order] + [nonmatching nodes of right_index in order]
         self._patched_node_arr = []
-        self._matching_poses = [] # stores g1 poses of matching nodes
+        self._matching_poses = [] # stores (g1_pos, g2_pos) of matching nodes
+        matching_left_poses = set()
+        matching_right_poses = set()
 
         for i, node in enumerate(left_index.get_node_arr()):
             if not right_index.node_in(node):
@@ -93,25 +106,36 @@ class PatchedIndex:
         for i, node in enumerate(left_index.get_node_arr()):
             if right_index.node_in(node):
                 self._patched_node_arr.append(node)
-                self._matching_poses.append(i)
 
-        for node in right_index.get_node_arr():
+                assert right_index.index_of(node) != -1
+
+                self._matching_poses.append((i, right_index.index_of(node)))
+                matching_left_poses.add(i)
+                matching_right_poses.add(right_index.index_of(node))
+
+        for i, node in enumerate(right_index.get_node_arr()):
             if not left_index.node_in(node):
                 self._patched_node_arr.append(node)
 
         # create extra_edges
         self._extra_edges = dict()
-        
-        for i in range(len(left_index) - self._num_matching):
-            for j in range(len(left_index), len(self._patched_node_arr)):
-                if self._patched_node_arr[j] in adj_set[self._patched_node_arr[i]]:
-                    if i not in self._extra_edges:
-                        self._extra_edges[i] = []
 
-                    self._extra_edges[i].append(j)
+        non_matching_left_poses = [i for i in range(len(left_index)) if i not in matching_left_poses]
+        non_matching_right_poses = [i for i in range(len(right_index)) if i not in matching_right_poses]
+        
+        assert len(right_index) == len(left_index)
+        assert len(non_matching_left_poses) == len(non_matching_right_poses) == len(right_index) - self._num_matching
+
+        for left_pos in non_matching_left_poses:
+            for right_pos in non_matching_right_poses:
+                if left_index.get_node_arr()[left_pos] in adj_set[right_index.get_node_arr()[right_pos]]:
+                    if left_pos not in self._extra_edges:
+                        self._extra_edges[left_pos] = []
+
+                    self._extra_edges[left_pos].append(right_pos)
 
         extra_edges_str = ';'.join([f'{key}:' + f'{",".join(str(pos) for pos in value)}' for key, value in sorted(list(self._extra_edges.items()))])
-        matching_poses_str = ','.join([str(pos) for pos in self._matching_poses])
+        matching_poses_str = ','.join([f'{g1_pos}:{g2_pos}' for g1_pos, g2_pos in self._matching_poses])
         self._key = f'{left_index.get_graphlet_id()};{right_index.get_graphlet_id()};{matching_poses_str};{extra_edges_str}'
 
     def get_node_arr(self):
@@ -183,6 +207,42 @@ def get_matching_poses_adj_list(index_list):
     debug_print(f'for {NUM_MATCHING_NODES} matching nodes, there are {num_total_matches} out of {num_checked} matches, or {num_total_matches * 100 / num_checked}%')
     return matching_poses_adj_list
 
+def sparsegraph_arr2str(arr):
+    return f'{",".join(str(elem) for elem in arr)}'
+
+def node_arr_to_sparsegraph(node_arr, adj_set):
+    nv = len(node_arr)
+    nde = 0
+    d = [0] * nv
+    v = [0] * nv
+    e = []
+
+    for i in range(len(node_arr)):
+        base_node = node_arr[i]
+
+        if i != len(node_arr) - 1:
+            v[i + 1] = v[i]
+
+        for j in range(len(node_arr)):
+            if i == j:
+                continue
+
+            compare_node = node_arr[j]
+
+            if compare_node in adj_set[base_node]:
+                assert base_node in adj_set[compare_node]
+                e.append(j)
+                d[i] += 1
+
+                if i != len(node_arr) - 1:
+                    v[i + 1] += 1
+
+                nde += 1
+            else:
+                assert base_node not in adj_set[compare_node]
+
+    return f'{nv};{nde};{sparsegraph_arr2str(v)};{sparsegraph_arr2str(d)};{sparsegraph_arr2str(e)}'
+
 def get_patched_indexes(matching_poses_adj_list, index_list, adj_set):
     patched_indexes = dict()
 
@@ -195,6 +255,8 @@ def get_patched_indexes(matching_poses_adj_list, index_list, adj_set):
                 patched_indexes[patched_index_key] = []
 
             patched_indexes[patched_index_key].append(patched_index)
+            # print(node_arr_to_sparsegraph(patched_index.get_node_arr(), adj_set))
+            # print(patched_index_key)
 
     return patched_indexes
 
@@ -226,15 +288,24 @@ def get_s1_to_s2():
     debug_print(f'there are {len(s1_to_s2.values())} orthologs and {len(set(s1_to_s2.values()))} unique orthologs')
     return s1_to_s2
 
+def reverse_dict(to_reverse): # PAT DEBUG
+    for key, val in to_reverse.items():
+        to_reverse[key] = list(reversed(val))
+
 def get_orthologs_list(s1_indexes, s2_indexes, s1_to_s2, num_seeds):
     PRINT = False
     orthologs_list = []
     pairs_processed = 0
     total_pairs_to_process = len(s1_indexes) * SEED_PROX_INC ** 2
     percent_printed = 0
+    # reverse_dict(s1_indexes) PAT DEBUG
+    # reverse_dict(s2_indexes) PAT DEBUG
 
     for patched_id, s1_patched_indexes in s1_indexes.items():
-        if patched_id in s2_indexes:
+        if len(s1_patched_indexes) != 1:
+            continue
+
+        if patched_id in s2_indexes and len(s2_indexes[patched_id]) == 1:
             for i in range(0, min(len(s1_patched_indexes), SEED_PROX_INC)):
                 s1_index = s1_patched_indexes[i].get_node_arr()
 
@@ -264,7 +335,7 @@ def get_orthologs_list(s1_indexes, s2_indexes, s1_to_s2, num_seeds):
                         debug_print(f'{percent_printed}% done', file=sys.stderr)
                         percent_printed += 1
 
-    print(f'on settings NUM_MATCHING_NODES={NUM_MATCHING_NODES} PATCH_PROX_INC={PATCH_PROX_INC} SEED_PROX_INC={SEED_PROX_INC}, there are {len(orthologs_list)} {MISSING_ALLOWED}|miss orthologs out of {pairs_processed} processed patched pairs, representing {len(orthologs_list) * 100 / pairs_processed}%')
+    debug_print(f'on settings NUM_MATCHING_NODES={NUM_MATCHING_NODES} PATCH_PROX_INC={PATCH_PROX_INC} SEED_PROX_INC={SEED_PROX_INC}, there are {len(orthologs_list)} {MISSING_ALLOWED}|miss orthologs out of {pairs_processed} processed patched pairs, representing {len(orthologs_list) * 100 / pairs_processed}%')
     return orthologs_list
 
 def main():
